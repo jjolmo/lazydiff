@@ -101,7 +101,7 @@ class DiffStore {
         head: this.ghHead
       });
       if (this.diffResult && this.diffResult.files.length > 0) {
-        this.selectFile(this.diffResult.files[0].filename);
+        this.selectedFile = this.diffResult.files[0].filename;
       }
     } catch (e: any) {
       this.error = e.toString();
@@ -117,7 +117,7 @@ class DiffStore {
     try {
       this.diffResult = await invoke<DiffResult>('fetch_github_diff', { url });
       if (this.diffResult && this.diffResult.files.length > 0) {
-        this.selectFile(this.diffResult.files[0].filename);
+        this.selectedFile = this.diffResult.files[0].filename;
       }
     } catch (e: any) {
       this.error = e.toString();
@@ -138,7 +138,7 @@ class DiffStore {
         baseBranch: this.localBase || null
       });
       if (this.diffResult && this.diffResult.files.length > 0) {
-        this.selectFile(this.diffResult.files[0].filename);
+        this.selectedFile = this.diffResult.files[0].filename;
       }
     } catch (e: any) {
       this.error = e.toString();
