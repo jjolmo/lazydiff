@@ -10,6 +10,8 @@
   let saveMessage = $state('');
   let updateInfo = $state<any>(null);
   let checkingUpdate = $state(false);
+  let updating = $state(false);
+  let updateMessage = $state('');
   let desktopMessage = $state('');
 
   async function saveApiKey() {
@@ -20,12 +22,26 @@
 
   async function checkUpdates() {
     checkingUpdate = true;
+    updateMessage = '';
     try {
       updateInfo = await invoke('check_for_updates');
     } catch (e: any) {
       updateInfo = { error: e.toString() };
     } finally {
       checkingUpdate = false;
+    }
+  }
+
+  async function runUpdate() {
+    updating = true;
+    updateMessage = '';
+    try {
+      const msg = await invoke<string>('run_self_update');
+      updateMessage = msg;
+    } catch (e: any) {
+      updateMessage = e.toString();
+    } finally {
+      updating = false;
     }
   }
 
@@ -134,6 +150,12 @@
               <p class="error">{updateInfo.error}</p>
             {:else if updateInfo.has_update}
               <p class="update-available">New version available: v{updateInfo.latest_version}</p>
+              <button class="primary-btn update-btn" onclick={runUpdate} disabled={updating} style="margin-top: 8px">
+                {updating ? 'Updating...' : 'Install Update'}
+              </button>
+              {#if updateMessage}
+                <p class="save-msg" style="margin-top: 6px">{updateMessage}</p>
+              {/if}
             {:else}
               <p class="save-msg">You're up to date!</p>
             {/if}

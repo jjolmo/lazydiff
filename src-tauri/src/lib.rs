@@ -502,6 +502,90 @@ fn check_for_updates() -> Result<UpdateInfo, String> {
     })
 }
 
+// --- Self-update (macOS) ---
+
+#[tauri::command]
+fn run_self_update() -> Result<String, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let script = r#"#!/bin/bash
+REPO="jjolmo/lazydiff"
+APP_NAME="LazyDiff.app"
+INSTALL_DIR="/Applications"
+
+RELEASE_JSON=$(curl -sL "https://api.github.com/repos/$REPO/releases/latest")
+PARSED=$(echo "$RELEASE_JSON" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+tag = data.get('tag_name', '')
+dmg_url = ''
+for asset in data.get('assets', []):
+    if asset['name'].endswith('.dmg'):
+        dmg_url = asset['browser_download_url']
+        break
+print(f'{tag}|{dmg_url}')
+" 2>&1)
+
+TAG=$(echo "$PARSED" | cut -d'|' -f1)
+DMG_URL=$(echo "$PARSED" | cut -d'|' -f2)
+
+[ -z "$TAG" ] && exit 1
+[ -z "$DMG_URL" ] && exit 1
+
+TMP_DIR=$(mktemp -d)
+TMP_DMG="$TMP_DIR/lazydiff.dmg"
+MOUNT_POINT="$TMP_DIR/mount"
+
+curl -L --fail -o "$TMP_DMG" "$DMG_URL" || { rm -rf "$TMP_DIR"; exit 1; }
+
+mkdir -p "$MOUNT_POINT"
+hdiutil attach "$TMP_DMG" -mountpoint "$MOUNT_POINT" -nobrowse -quiet || { rm -rf "$TMP_DIR"; exit 1; }
+
+[ ! -d "$MOUNT_POINT/$APP_NAME" ] && { hdiutil detach "$MOUNT_POINT" 2>/dev/null; rm -rf "$TMP_DIR"; exit 1; }
+
+osascript -e 'quit app "LazyDiff"' 2>/dev/null || true
+sleep 2
+pkill -f "LazyDiff" 2>/dev/null || true
+sleep 1
+
+rm -rf "$INSTALL_DIR/$APP_NAME"
+cp -R "$MOUNT_POINT/$APP_NAME" "$INSTALL_DIR/$APP_NAME"
+xattr -cr "$INSTALL_DIR/$APP_NAME"
+
+hdiutil detach "$MOUNT_POINT" 2>/dev/null || true
+rm -rf "$TMP_DIR"
+
+open "$INSTALL_DIR/$APP_NAME"
+"#;
+        let tmp_script = std::env::temp_dir().join("lazydiff_update.sh");
+        std::fs::write(&tmp_script, script).map_err(|e| e.to_string())?;
+
+        Command::new("chmod")
+            .args(["+x", &tmp_script.to_string_lossy()])
+            .output()
+            .map_err(|e| e.to_string())?;
+
+        // Run in background via osascript Terminal so user sees progress
+        Command::new("osascript")
+            .args([
+                "-e",
+                &format!(
+                    "tell application \"Terminal\" to do script \"{}\"",
+                    tmp_script.to_string_lossy()
+                ),
+            ])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+
+        Ok("Update started in Terminal".to_string())
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("Self-update is only supported on macOS. On Linux use your package manager or download the new AppImage/deb.".to_string())
+    }
+}
+
 // --- Desktop entry (Linux) ---
 
 #[tauri::command]
@@ -564,6 +648,7 @@ pub fn run() {
             list_branches,
             summarize_with_claude,
             check_for_updates,
+            run_self_update,
             create_desktop_entry,
         ])
         .setup(|app| {
