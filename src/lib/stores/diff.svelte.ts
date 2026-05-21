@@ -98,7 +98,7 @@ class DiffStore {
         head: this.ghHead
       });
       if (this.diffResult && this.diffResult.files.length > 0) {
-        this.selectedFile = this.diffResult.files[0].filename;
+        this.selectFile(this.diffResult.files[0].filename);
       }
     } catch (e: any) {
       this.error = e.toString();
@@ -114,7 +114,7 @@ class DiffStore {
     try {
       this.diffResult = await invoke<DiffResult>('fetch_github_diff', { url });
       if (this.diffResult && this.diffResult.files.length > 0) {
-        this.selectedFile = this.diffResult.files[0].filename;
+        this.selectFile(this.diffResult.files[0].filename);
       }
     } catch (e: any) {
       this.error = e.toString();
@@ -135,7 +135,7 @@ class DiffStore {
         baseBranch: this.localBase || null
       });
       if (this.diffResult && this.diffResult.files.length > 0) {
-        this.selectedFile = this.diffResult.files[0].filename;
+        this.selectFile(this.diffResult.files[0].filename);
       }
     } catch (e: any) {
       this.error = e.toString();
@@ -194,6 +194,35 @@ class DiffStore {
 
   selectFile(filename: string) {
     this.selectedFile = filename;
+    this.summarizeFileIfNeeded(filename);
+  }
+
+  private async summarizeFileIfNeeded(filename: string) {
+    if (!settingsStore.hasClaudeKey) return;
+    if (this.summaries.has(filename)) return;
+    if (!this.diffResult) return;
+    const file = this.diffResult.files.find(f => f.filename === filename);
+    if (!file || !file.patch) return;
+    if (this.isSummarizing) return;
+
+    this.isSummarizing = true;
+    this.summarizingFile = filename;
+    try {
+      const results = await invoke<AiSummary[]>('summarize_with_claude', {
+        apiKey: settingsStore.claudeApiKey,
+        fileDiffs: [file]
+      });
+      const newMap = new Map(this.summaries);
+      for (const s of results) {
+        newMap.set(s.filename, s);
+      }
+      this.summaries = newMap;
+    } catch (e: any) {
+      this.error = e.toString();
+    } finally {
+      this.isSummarizing = false;
+      this.summarizingFile = null;
+    }
   }
 
   reset() {
