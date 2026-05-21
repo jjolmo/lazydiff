@@ -8,8 +8,23 @@
   import { open } from '@tauri-apps/plugin-dialog';
 
   let showSettings = $state(false);
+  let showCostWarning = $state(false);
   let sidebarWidth = $state(280);
   let repoInputTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function handleSummarizeAll() {
+    const fileCount = diffStore.diffResult?.files.length || 0;
+    if (fileCount > 10) {
+      showCostWarning = true;
+    } else {
+      diffStore.summarizeAll();
+    }
+  }
+
+  function confirmSummarizeAll() {
+    showCostWarning = false;
+    diffStore.summarizeAll();
+  }
 
   async function handleFetch() {
     if (diffStore.mode === 'github') {
@@ -109,7 +124,7 @@
         onclick={handleFetch}
         disabled={diffStore.isLoading}
       >
-        {diffStore.isLoading ? 'Loading...' : 'Fetch'}
+        {diffStore.isLoading ? 'Loading...' : 'Load Repo'}
       </button>
     </div>
 
@@ -127,13 +142,13 @@
         </div>
         <button
           class="summarize-btn"
-          onclick={() => diffStore.summarizeAll()}
+          onclick={handleSummarizeAll}
           disabled={diffStore.isSummarizing}
         >
           {#if diffStore.isSummarizing}
             Summarizing... ({Math.round(diffStore.progress)}%)
           {:else}
-            &#9889; Summarize All
+            &#9889; Summarize All ({diffStore.diffResult?.files.length})
           {/if}
         </button>
       {/if}
@@ -219,6 +234,20 @@
 
 {#if showSettings}
   <SettingsPanel onclose={() => showSettings = false} />
+{/if}
+
+{#if showCostWarning}
+  <div class="warning-overlay" onclick={() => showCostWarning = false} role="presentation">
+    <div class="warning-dialog" onclick={(e) => e.stopPropagation()} role="alertdialog">
+      <div class="warning-icon">&#9888;</div>
+      <h3>API Cost Warning</h3>
+      <p>You're about to summarize <strong>{diffStore.diffResult?.files.length} files</strong> using the Claude API. Each file costs tokens — this could add up.</p>
+      <div class="warning-actions">
+        <button class="warning-cancel" onclick={() => showCostWarning = false}>Cancel</button>
+        <button class="warning-confirm" onclick={confirmSummarizeAll}>Summarize All</button>
+      </div>
+    </div>
+  </div>
 {/if}
 
 <style>
@@ -471,6 +500,30 @@
     cursor: pointer;
   }
   .setup-btn:hover { background: var(--color-bg-hover); color: var(--color-text-primary); }
+
+  /* Cost warning dialog */
+  .warning-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+    display: flex; align-items: center; justify-content: center; z-index: 100;
+  }
+  .warning-dialog {
+    background: var(--color-bg-primary); border: 1px solid var(--color-border);
+    border-radius: 12px; padding: 24px; max-width: 380px; text-align: center;
+  }
+  .warning-icon { font-size: 36px; margin-bottom: 8px; }
+  .warning-dialog h3 { font-size: 16px; margin-bottom: 8px; color: var(--color-text-primary); }
+  .warning-dialog p { font-size: 13px; color: var(--color-text-secondary); line-height: 1.5; margin-bottom: 20px; }
+  .warning-actions { display: flex; gap: 10px; justify-content: center; }
+  .warning-cancel {
+    padding: 8px 20px; background: var(--color-bg-tertiary); border: 1px solid var(--color-border);
+    border-radius: 6px; color: var(--color-text-secondary); font-size: 13px; cursor: pointer;
+  }
+  .warning-cancel:hover { background: var(--color-bg-hover); }
+  .warning-confirm {
+    padding: 8px 20px; background: var(--color-accent); border: none;
+    border-radius: 6px; color: white; font-size: 13px; font-weight: 600; cursor: pointer;
+  }
+  .warning-confirm:hover { background: var(--color-accent-hover); }
 
   /* Loading screen */
   .loading-screen {
