@@ -424,15 +424,20 @@ fn summarize_with_claude(api_key: String, file_diffs: Vec<FileDiff>) -> Result<V
         }
 
         let prompt = format!(
-            r#"Analyze this code diff and describe the changes in simple, functional terms.
-Do NOT show code. Use short bullet points describing WHAT changed functionally.
-Format:
-- If something was added: "Now does X"
-- If something was removed: "No longer does X"
-- If something was modified: "Instead of X, now does Y"
-- If unchanged parts are relevant for context: "Still does X (unchanged)"
+            r#"Analyze this code diff. Reply with EXACTLY this format (keep each section to one line where possible):
 
-Keep it very concise. Max 5 bullet points per file. Use plain language, not code.
+ROLE: [One sentence: what this file does in the project]
+CALLS: [Comma-separated: what this file imports/calls/depends on, or "nothing" if standalone]
+CALLED_BY: [Comma-separated: what likely calls/imports this file based on its exports, or "unknown"]
+CHANGES:
+- [bullet point describing what changed functionally, plain language, no code]
+- [max 5 bullets]
+
+Rules:
+- ROLE must always be filled, even for new files. Infer from the code.
+- For CALLS/CALLED_BY, use short names (e.g. "AuthService", "database", "API router"), not file paths.
+- For CHANGES bullets: "Now does X" for additions, "No longer does X" for removals, "Instead of X, now does Y" for modifications.
+- Keep everything very concise. Plain language, not code.
 
 File: {}
 Status: {}
