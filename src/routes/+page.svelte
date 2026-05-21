@@ -138,7 +138,15 @@
     </div>
   {/if}
 
-  {#if diffStore.diffResult}
+  {#if diffStore.isLoading}
+    <!-- Loading state -->
+    <div class="loading-screen">
+      <div class="loader">
+        <div class="loader-ring"></div>
+        <p class="loader-text">Fetching diff...</p>
+      </div>
+    </div>
+  {:else if diffStore.diffResult}
     <!-- Main content: tree + diff -->
     <div class="main">
       <div class="sidebar" style="width: {sidebarWidth}px">
@@ -160,7 +168,7 @@
         <DiffViewer />
       </div>
     </div>
-  {:else if !diffStore.isLoading}
+  {:else}
     <!-- Landing -->
     <div class="landing">
       <div class="landing-content">
@@ -431,4 +439,33 @@
     cursor: pointer;
   }
   .setup-btn:hover { background: var(--color-bg-hover); color: var(--color-text-primary); }
+
+  /* Loading screen */
+  .loading-screen {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .loader {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 20px;
+  }
+  .loader-ring {
+    width: 48px;
+    height: 48px;
+    border: 3px solid var(--color-border);
+    border-top-color: var(--color-accent);
+    border-radius: 50%;
+    animation: loader-spin 0.9s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  }
+  @keyframes loader-spin { to { transform: rotate(360deg); } }
+  .loader-text {
+    font-size: 13px;
+    color: var(--color-text-secondary);
+    animation: loader-pulse 1.5s ease-in-out infinite;
+  }
+  @keyframes loader-pulse { 50% { opacity: 0.4; } }
 </style>
