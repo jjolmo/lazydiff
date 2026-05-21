@@ -1,0 +1,481 @@
+use parking_lot::Mutex;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::process::Command;
+use std::sync::Arc;
+use tauri::{Manager, State};
+
+#[derive(Debug, Default)]
+pub struct AppState {
+    pub settings: Mutex<HashMap<String, String>>,
+}
+
+// --- Settings commands ---
+
+#[tauri::command]
+fn get_setting(key: String, state: State<'_, Arc<AppState>>) -> Option<String> {
+    state.settings.lock().get(&key).cloned()
+}
+
+#[tauri::command]
+fn set_setting(key: String, value: String, state: State<'_, Arc<AppState>>) {
+    state.settings.lock().insert(key, value);
+}
+
+// --- Git diff types ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileDiff {
+    pub filename: String,
+    pub status: String, // added, removed, modified, renamed
+    pub additions: u32,
+    pub deletions: u32,
+    pub patch: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiffResult {
+    pub base: String,
+    pub head: String,
+    pub files: Vec<FileDiff>,
+    pub total_additions: u32,
+    pub total_deletions: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AiSummary {
+    pub filename: String,
+    pub summary: String,
+}
+
+// --- GitHub API command ---
+
+#[tauri::command]
+fn fetch_github_diff(url: String) -> Result<DiffResult, String> {
+    // Parse PR URL: https://github.com/owner/repo/pull/123
+    // Parse branch URL: https://github.com/owner/repo/tree/branch-name
+    // Parse compare URL: https://github.com/owner/repo/compare/base...head
+    let parts: Vec<&str> = url.trim_end_matches('/').split('/').collect();
+
+    let (owner, repo, base, head) = if let Some(pos) = parts.iter().position(|&p| p == "pull") {
+        let owner = parts.get(pos - 2).ok_or("Invalid PR URL")?;
+        let repo = parts.get(pos - 1).ok_or("Invalid PR URL")?;
+        let pr_num = parts.get(pos + 1).ok_or("Invalid PR URL")?;
+        // Fetch PR to get base/head branches
+        let pr_url = format!(
+            "https://api.github.com/repos/{}/{}/pulls/{}",
+            owner, repo, pr_num
+        );
+        let client = reqwest::blocking::Client::new();
+        let resp = client
+            .get(&pr_url)
+            .header("User-Agent", "lazydiff")
+            .header("Accept", "application/vnd.github.v3+json")
+            .send()
+            .map_err(|e| format!("Failed to fetch PR: {}", e))?;
+        let json: serde_json::Value =
+            resp.json().map_err(|e| format!("Failed to parse PR: {}", e))?;
+        let base_ref = json["base"]["ref"]
+            .as_str()
+            .unwrap_or("main")
+            .to_string();
+        let head_ref = json["head"]["ref"]
+            .as_str()
+            .unwrap_or("HEAD")
+            .to_string();
+        (
+            owner.to_string(),
+            repo.to_string(),
+            base_ref,
+            head_ref,
+        )
+    } else if let Some(pos) = parts.iter().position(|&p| p == "compare") {
+        let owner = parts.get(pos - 2).ok_or("Invalid compare URL")?;
+        let repo = parts.get(pos - 1).ok_or("Invalid compare URL")?;
+        let compare = parts.get(pos + 1).ok_or("Invalid compare URL")?;
+        let branches: Vec<&str> = compare.split("...").collect();
+        if branches.len() != 2 {
+            return Err("Invalid compare URL format, expected base...head".into());
+        }
+        (
+            owner.to_string(),
+            repo.to_string(),
+            branches[0].to_string(),
+            branches[1].to_string(),
+        )
+    } else if let Some(pos) = parts.iter().position(|&p| p == "tree") {
+        let owner = parts.get(pos - 2).ok_or("Invalid branch URL")?;
+        let repo = parts.get(pos - 1).ok_or("Invalid branch URL")?;
+        let branch = parts[pos + 1..].join("/");
+        (
+            owner.to_string(),
+            repo.to_string(),
+            "main".to_string(),
+            branch,
+        )
+    } else {
+        return Err(
+            "Unrecognized URL format. Use a PR, branch, or compare URL from GitHub.".into(),
+        );
+    };
+
+    // Fetch compare diff
+    let compare_url = format!(
+        "https://api.github.com/repos/{}/{}/compare/{}...{}",
+        owner, repo, base, head
+    );
+    let client = reqwest::blocking::Client::new();
+    let resp = client
+        .get(&compare_url)
+        .header("User-Agent", "lazydiff")
+        .header("Accept", "application/vnd.github.v3+json")
+        .send()
+        .map_err(|e| format!("Failed to fetch diff: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("GitHub API error: {}", resp.status()));
+    }
+
+    let json: serde_json::Value =
+        resp.json().map_err(|e| format!("Failed to parse diff: {}", e))?;
+
+    let files = json["files"]
+        .as_array()
+        .unwrap_or(&vec![])
+        .iter()
+        .map(|f| FileDiff {
+            filename: f["filename"].as_str().unwrap_or("").to_string(),
+            status: f["status"].as_str().unwrap_or("modified").to_string(),
+            additions: f["additions"].as_u64().unwrap_or(0) as u32,
+            deletions: f["deletions"].as_u64().unwrap_or(0) as u32,
+            patch: f["patch"].as_str().unwrap_or("").to_string(),
+        })
+        .collect::<Vec<_>>();
+
+    let total_additions = files.iter().map(|f| f.additions).sum();
+    let total_deletions = files.iter().map(|f| f.deletions).sum();
+
+    Ok(DiffResult {
+        base,
+        head,
+        files,
+        total_additions,
+        total_deletions,
+    })
+}
+
+// --- Local git diff command ---
+
+#[tauri::command]
+fn fetch_local_diff(repo_path: String, branch: String) -> Result<DiffResult, String> {
+    // Detect base branch (main or master)
+    let base = {
+        let check_main = Command::new("git")
+            .args(["rev-parse", "--verify", "main"])
+            .current_dir(&repo_path)
+            .output();
+        if check_main.map(|o| o.status.success()).unwrap_or(false) {
+            "main"
+        } else {
+            "master"
+        }
+    };
+
+    // Get diff stat
+    let output = Command::new("git")
+        .args(["diff", "--numstat", &format!("{}...{}", base, branch)])
+        .current_dir(&repo_path)
+        .output()
+        .map_err(|e| format!("Failed to run git diff: {}", e))?;
+
+    let numstat = String::from_utf8_lossy(&output.stdout);
+
+    // Get patch
+    let patch_output = Command::new("git")
+        .args(["diff", "-U3", &format!("{}...{}", base, branch)])
+        .current_dir(&repo_path)
+        .output()
+        .map_err(|e| format!("Failed to get patch: {}", e))?;
+
+    let full_patch = String::from_utf8_lossy(&patch_output.stdout).to_string();
+
+    // Parse file patches
+    let file_patches: HashMap<String, String> = parse_file_patches(&full_patch);
+
+    let mut files = Vec::new();
+    for line in numstat.lines() {
+        let parts: Vec<&str> = line.split('\t').collect();
+        if parts.len() >= 3 {
+            let additions = parts[0].parse::<u32>().unwrap_or(0);
+            let deletions = parts[1].parse::<u32>().unwrap_or(0);
+            let filename = parts[2].to_string();
+            let status = if additions > 0 && deletions > 0 {
+                "modified"
+            } else if additions > 0 {
+                "added"
+            } else {
+                "removed"
+            };
+            let patch = file_patches.get(&filename).cloned().unwrap_or_default();
+            files.push(FileDiff {
+                filename,
+                status: status.to_string(),
+                additions,
+                deletions,
+                patch,
+            });
+        }
+    }
+
+    let total_additions = files.iter().map(|f| f.additions).sum();
+    let total_deletions = files.iter().map(|f| f.deletions).sum();
+
+    Ok(DiffResult {
+        base: base.to_string(),
+        head: branch,
+        files,
+        total_additions,
+        total_deletions,
+    })
+}
+
+fn parse_file_patches(full_patch: &str) -> HashMap<String, String> {
+    let mut result = HashMap::new();
+    let mut current_file: Option<String> = None;
+    let mut current_patch = String::new();
+
+    for line in full_patch.lines() {
+        if line.starts_with("diff --git") {
+            if let Some(ref file) = current_file {
+                result.insert(file.clone(), current_patch.clone());
+            }
+            // Extract filename from "diff --git a/path b/path"
+            let parts: Vec<&str> = line.split(" b/").collect();
+            current_file = parts.get(1).map(|s| s.to_string());
+            current_patch = String::new();
+        } else if current_file.is_some() {
+            current_patch.push_str(line);
+            current_patch.push('\n');
+        }
+    }
+    if let Some(file) = current_file {
+        result.insert(file, current_patch);
+    }
+    result
+}
+
+// --- List local branches ---
+
+#[tauri::command]
+fn list_branches(repo_path: String) -> Result<Vec<String>, String> {
+    let output = Command::new("git")
+        .args(["branch", "--format=%(refname:short)"])
+        .current_dir(&repo_path)
+        .output()
+        .map_err(|e| format!("Failed to list branches: {}", e))?;
+
+    let branches = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+
+    Ok(branches)
+}
+
+// --- Claude API command ---
+
+#[tauri::command]
+fn summarize_with_claude(api_key: String, file_diffs: Vec<FileDiff>) -> Result<Vec<AiSummary>, String> {
+    let client = reqwest::blocking::Client::new();
+
+    let mut summaries = Vec::new();
+
+    for file in &file_diffs {
+        if file.patch.is_empty() {
+            summaries.push(AiSummary {
+                filename: file.filename.clone(),
+                summary: format!("File {} (no patch content available)", file.status),
+            });
+            continue;
+        }
+
+        let prompt = format!(
+            r#"Analyze this code diff and describe the changes in simple, functional terms.
+Do NOT show code. Use short bullet points describing WHAT changed functionally.
+Format:
+- If something was added: "Now does X"
+- If something was removed: "No longer does X"
+- If something was modified: "Instead of X, now does Y"
+- If unchanged parts are relevant for context: "Still does X (unchanged)"
+
+Keep it very concise. Max 5 bullet points per file. Use plain language, not code.
+
+File: {}
+Status: {}
+Diff:
+```
+{}
+```"#,
+            file.filename, file.status, file.patch
+        );
+
+        let body = serde_json::json!({
+            "model": "claude-sonnet-4-20250514",
+            "max_tokens": 500,
+            "messages": [{
+                "role": "user",
+                "content": prompt
+            }]
+        });
+
+        let resp = client
+            .post("https://api.anthropic.com/v1/messages")
+            .header("x-api-key", &api_key)
+            .header("anthropic-version", "2023-06-01")
+            .header("content-type", "application/json")
+            .json(&body)
+            .send()
+            .map_err(|e| format!("Claude API error: {}", e))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().unwrap_or_default();
+            return Err(format!("Claude API error {}: {}", status, body));
+        }
+
+        let json: serde_json::Value =
+            resp.json().map_err(|e| format!("Failed to parse Claude response: {}", e))?;
+
+        let text = json["content"][0]["text"]
+            .as_str()
+            .unwrap_or("No summary available")
+            .to_string();
+
+        summaries.push(AiSummary {
+            filename: file.filename.clone(),
+            summary: text,
+        });
+    }
+
+    Ok(summaries)
+}
+
+// --- Update checker ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateInfo {
+    pub current_version: String,
+    pub latest_version: String,
+    pub has_update: bool,
+    pub download_url: String,
+    pub release_url: String,
+}
+
+#[tauri::command]
+fn check_for_updates() -> Result<UpdateInfo, String> {
+    let current = env!("CARGO_PKG_VERSION");
+    let url = "https://api.github.com/repos/jjolmo/lazydiff/releases/latest";
+    let client = reqwest::blocking::Client::new();
+    let resp = client
+        .get(url)
+        .header("User-Agent", "lazydiff")
+        .send()
+        .map_err(|e| e.to_string())?;
+    let json: serde_json::Value =
+        resp.json().map_err(|e| format!("Failed to parse: {}", e))?;
+    let tag = json["tag_name"].as_str().unwrap_or("v0.0.0");
+    let latest = tag.trim_start_matches('v');
+    let release_url = json["html_url"].as_str().unwrap_or("").to_string();
+    let mut download_url = String::new();
+    if let Some(assets) = json["assets"].as_array() {
+        for asset in assets {
+            let name = asset["name"].as_str().unwrap_or("");
+            if name.ends_with(".AppImage") || name.ends_with(".msi") || name.ends_with(".dmg") {
+                download_url = asset["browser_download_url"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string();
+                break;
+            }
+        }
+    }
+    Ok(UpdateInfo {
+        current_version: current.to_string(),
+        latest_version: latest.to_string(),
+        has_update: latest != current,
+        download_url,
+        release_url,
+    })
+}
+
+// --- Desktop entry (Linux) ---
+
+#[tauri::command]
+fn create_desktop_entry(app_handle: tauri::AppHandle) -> Result<String, String> {
+    #[cfg(target_os = "linux")]
+    {
+        let home = std::env::var("HOME").map_err(|e| e.to_string())?;
+        let exe_path = std::env::current_exe().map_err(|e| e.to_string())?;
+        let exe_str = exe_path.to_string_lossy().to_string();
+        let icons_dir = std::path::PathBuf::from(&home).join(".local/share/icons");
+        std::fs::create_dir_all(&icons_dir).map_err(|e| e.to_string())?;
+        let icon_dest = icons_dir.join("lazydiff.png");
+        let resource_path = app_handle
+            .path()
+            .resource_dir()
+            .map_err(|e| e.to_string())?;
+        let icon_src = resource_path.join("icons/128x128.png");
+        if icon_src.exists() {
+            std::fs::copy(&icon_src, &icon_dest).map_err(|e| e.to_string())?;
+        }
+        let apps_dir = std::path::PathBuf::from(&home).join(".local/share/applications");
+        std::fs::create_dir_all(&apps_dir).map_err(|e| e.to_string())?;
+        let desktop_path = apps_dir.join("lazydiff.desktop");
+        let content = format!(
+            "[Desktop Entry]\nType=Application\nName=LazyDiff\nComment=Human-readable PR diff viewer\n\
+             Exec={}\nIcon=lazydiff\nTerminal=false\nCategories=Development;\nStartupWMClass=lazydiff\n",
+            exe_str
+        );
+        std::fs::write(&desktop_path, &content).map_err(|e| e.to_string())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&desktop_path, std::fs::Permissions::from_mode(0o755))
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(desktop_path.to_string_lossy().to_string())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = app_handle;
+        Err("Desktop entries are only supported on Linux".to_string())
+    }
+}
+
+pub fn run() {
+    let state = Arc::new(AppState::default());
+
+    tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_shell::init())
+        .manage(state)
+        .invoke_handler(tauri::generate_handler![
+            get_setting,
+            set_setting,
+            fetch_github_diff,
+            fetch_local_diff,
+            list_branches,
+            summarize_with_claude,
+            check_for_updates,
+            create_desktop_entry,
+        ])
+        .setup(|app| {
+            let window = app.get_webview_window("main").unwrap();
+            window.set_title("LazyDiff").ok();
+            Ok(())
+        })
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}
