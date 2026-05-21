@@ -6,6 +6,8 @@ class DiffStore {
   // State
   diffResult = $state<DiffResult | null>(null);
   summaries = $state<Map<string, AiSummary>>(new Map());
+  cavemanSummaries = $state<Map<string, AiSummary>>(new Map());
+  summaryStyle = $state<'human' | 'caveman'>('human');
   selectedFile = $state<string | null>(null);
   isLoading = $state(false);
   isSummarizing = $state(false);
@@ -39,7 +41,8 @@ class DiffStore {
 
   get selectedFileSummary(): AiSummary | null {
     if (!this.selectedFile) return null;
-    return this.summaries.get(this.selectedFile) || null;
+    const map = this.summaryStyle === 'caveman' ? this.cavemanSummaries : this.summaries;
+    return map.get(this.selectedFile) || null;
   }
 
   get progress(): number {
@@ -168,6 +171,7 @@ class DiffStore {
     if (!this.diffResult || !settingsStore.hasClaudeKey) return;
     this.isSummarizing = true;
     this.error = null;
+    const isCaveman = this.summaryStyle === 'caveman';
 
     try {
       const files = this.diffResult.files;
@@ -176,13 +180,19 @@ class DiffStore {
         this.summarizingFile = batch[0].filename;
         const results = await invoke<AiSummary[]>('summarize_with_claude', {
           apiKey: settingsStore.claudeApiKey,
-          fileDiffs: batch
+          fileDiffs: batch,
+          style: isCaveman ? 'caveman' : null
         });
-        const newMap = new Map(this.summaries);
+        const map = isCaveman ? this.cavemanSummaries : this.summaries;
+        const newMap = new Map(map);
         for (const s of results) {
           newMap.set(s.filename, s);
         }
-        this.summaries = newMap;
+        if (isCaveman) {
+          this.cavemanSummaries = newMap;
+        } else {
+          this.summaries = newMap;
+        }
       }
     } catch (e: any) {
       this.error = e.toString();
@@ -199,7 +209,8 @@ class DiffStore {
 
   private async summarizeFileIfNeeded(filename: string) {
     if (!settingsStore.hasClaudeKey) return;
-    if (this.summaries.has(filename)) return;
+    const map = this.summaryStyle === 'caveman' ? this.cavemanSummaries : this.summaries;
+    if (map.has(filename)) return;
     if (!this.diffResult) return;
     const file = this.diffResult.files.find(f => f.filename === filename);
     if (!file || !file.patch) return;
@@ -210,18 +221,31 @@ class DiffStore {
     try {
       const results = await invoke<AiSummary[]>('summarize_with_claude', {
         apiKey: settingsStore.claudeApiKey,
-        fileDiffs: [file]
+        fileDiffs: [file],
+        style: this.summaryStyle === 'caveman' ? 'caveman' : null
       });
-      const newMap = new Map(this.summaries);
+      const newMap = new Map(map);
       for (const s of results) {
         newMap.set(s.filename, s);
       }
-      this.summaries = newMap;
+      if (this.summaryStyle === 'caveman') {
+        this.cavemanSummaries = newMap;
+      } else {
+        this.summaries = newMap;
+      }
     } catch (e: any) {
       this.error = e.toString();
     } finally {
       this.isSummarizing = false;
       this.summarizingFile = null;
+    }
+  }
+
+  toggleStyle() {
+    this.summaryStyle = this.summaryStyle === 'human' ? 'caveman' : 'human';
+    // Re-summarize current file if needed
+    if (this.selectedFile) {
+      this.summarizeFileIfNeeded(this.selectedFile);
     }
   }
 

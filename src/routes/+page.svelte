@@ -115,6 +115,16 @@
 
     <div class="toolbar-right">
       {#if diffStore.diffResult && settingsStore.hasClaudeKey}
+        <div class="style-toggle">
+          <button
+            class:active={diffStore.summaryStyle === 'human'}
+            onclick={() => { diffStore.summaryStyle = 'human'; if (diffStore.selectedFile) diffStore.selectFile(diffStore.selectedFile); }}
+          >Human</button>
+          <button
+            class:active={diffStore.summaryStyle === 'caveman'}
+            onclick={() => { diffStore.summaryStyle = 'caveman'; if (diffStore.selectedFile) diffStore.selectFile(diffStore.selectedFile); }}
+          >Caveman</button>
+        </div>
         <button
           class="summarize-btn"
           onclick={() => diffStore.summarizeAll()}
@@ -315,6 +325,28 @@
   }
   .fetch-btn:hover { background: var(--color-accent-hover); }
   .fetch-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .style-toggle {
+    display: flex;
+    background: var(--color-bg-primary);
+    border-radius: 6px;
+    overflow: hidden;
+    border: 1px solid var(--color-border);
+    flex-shrink: 0;
+  }
+  .style-toggle button {
+    padding: 4px 10px;
+    border: none;
+    background: none;
+    color: var(--color-text-muted);
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .style-toggle button.active {
+    background: var(--color-bg-hover);
+    color: var(--color-text-primary);
+    font-weight: 600;
+  }
   .summarize-btn {
     padding: 6px 14px;
     background: var(--color-bg-hover);
