@@ -11,10 +11,20 @@ class DiffStore {
   isSummarizing = $state(false);
   summarizingFile = $state<string | null>(null);
   error = $state<string | null>(null);
-  inputUrl = $state('');
   mode = $state<'github' | 'local'>('github');
+
+  // GitHub fields
+  inputUrl = $state('');
+  ghRepo = $state('');
+  ghHead = $state('');
+  ghBase = $state('trunk');
+  ghBranches = $state<string[]>([]);
+  ghLoadingBranches = $state(false);
+
+  // Local fields
   localPath = $state('');
   localBranch = $state('');
+  localBase = $state('');
   localBranches = $state<string[]>([]);
 
   get fileTree(): FileTreeNode[] {
@@ -37,13 +47,72 @@ class DiffStore {
     return (this.summaries.size / this.diffResult.files.length) * 100;
   }
 
+  // Parse "owner/repo" from URL or direct input
+  parseRepo(input: string): { owner: string; repo: string } | null {
+    const trimmed = input.trim().replace(/\/$/, '');
+    // Direct owner/repo format
+    const directMatch = trimmed.match(/^([a-zA-Z0-9_.-]+)\/([a-zA-Z0-9_.-]+)$/);
+    if (directMatch) return { owner: directMatch[1], repo: directMatch[2] };
+    // GitHub URL: extract owner/repo
+    const urlMatch = trimmed.match(/github\.com\/([a-zA-Z0-9_.-]+)\/([a-zA-Z0-9_.-]+)/);
+    if (urlMatch) return { owner: urlMatch[1], repo: urlMatch[2] };
+    return null;
+  }
+
+  async loadGitHubBranches() {
+    const parsed = this.parseRepo(this.ghRepo);
+    if (!parsed) {
+      this.ghBranches = [];
+      return;
+    }
+    this.ghLoadingBranches = true;
+    try {
+      this.ghBranches = await invoke<string[]>('fetch_github_branches', {
+        owner: parsed.owner,
+        repo: parsed.repo
+      });
+    } catch {
+      this.ghBranches = [];
+    } finally {
+      this.ghLoadingBranches = false;
+    }
+  }
+
   async fetchGitHubDiff() {
-    if (!this.inputUrl.trim()) return;
+    // If there's a full URL with /pull/ or /compare/, use the URL parser
+    if (this.ghRepo.includes('/pull/') || this.ghRepo.includes('/compare/')) {
+      return this.fetchGitHubDiffByUrl(this.ghRepo);
+    }
+
+    const parsed = this.parseRepo(this.ghRepo);
+    if (!parsed || !this.ghHead) return;
+
     this.isLoading = true;
     this.error = null;
     this.summaries = new Map();
     try {
-      this.diffResult = await invoke<DiffResult>('fetch_github_diff', { url: this.inputUrl });
+      this.diffResult = await invoke<DiffResult>('fetch_github_compare', {
+        owner: parsed.owner,
+        repo: parsed.repo,
+        base: this.ghBase || 'main',
+        head: this.ghHead
+      });
+      if (this.diffResult && this.diffResult.files.length > 0) {
+        this.selectedFile = this.diffResult.files[0].filename;
+      }
+    } catch (e: any) {
+      this.error = e.toString();
+    } finally {
+      this.isLoading = false;
+    }
+  }
+
+  async fetchGitHubDiffByUrl(url: string) {
+    this.isLoading = true;
+    this.error = null;
+    this.summaries = new Map();
+    try {
+      this.diffResult = await invoke<DiffResult>('fetch_github_diff', { url });
       if (this.diffResult && this.diffResult.files.length > 0) {
         this.selectedFile = this.diffResult.files[0].filename;
       }
@@ -89,7 +158,6 @@ class DiffStore {
     this.error = null;
 
     try {
-      // Summarize in batches of 3
       const files = this.diffResult.files;
       for (let i = 0; i < files.length; i += 3) {
         const batch = files.slice(i, i + 3);
