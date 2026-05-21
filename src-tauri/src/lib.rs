@@ -409,8 +409,9 @@ fn current_branch(repo_path: String) -> Result<String, String> {
 // --- Claude API command ---
 
 #[tauri::command]
-fn summarize_with_claude(api_key: String, file_diffs: Vec<FileDiff>) -> Result<Vec<AiSummary>, String> {
+fn summarize_with_claude(api_key: String, file_diffs: Vec<FileDiff>, style: Option<String>) -> Result<Vec<AiSummary>, String> {
     let client = reqwest::blocking::Client::new();
+    let is_caveman = style.as_deref() == Some("caveman");
 
     let mut summaries = Vec::new();
 
@@ -423,8 +424,33 @@ fn summarize_with_claude(api_key: String, file_diffs: Vec<FileDiff>) -> Result<V
             continue;
         }
 
-        let prompt = format!(
-            r#"Analyze this code diff. Reply with EXACTLY this format (keep each section to one line where possible):
+        let prompt = if is_caveman {
+            format!(
+                r#"Analyze code diff. Reply EXACTLY this format. Use CAVEMAN COMPRESSION style:
+- Strip grammar. Keep facts. 2-5 words per sentence.
+- No connectives (because, however, therefore). No filler words.
+- Active voice. Present tense. Action verbs.
+- Keep specifics: numbers, names, technical terms.
+
+Format:
+
+ROLE: [2-5 word description. What file do.]
+CALLS: [Short names comma-separated. Or "nothing".]
+CALLED_BY: [Short names comma-separated. Or "unknown".]
+CHANGES:
+- [Max 5 bullets. Caveman style. "Add index." "Remove old auth." "Change timeout 30s to 60s."]
+
+File: {}
+Status: {}
+Diff:
+```
+{}
+```"#,
+                file.filename, file.status, file.patch
+            )
+        } else {
+            format!(
+                r#"Analyze this code diff. Reply with EXACTLY this format (keep each section to one line where possible):
 
 ROLE: [One sentence: what this file does in the project]
 CALLS: [Comma-separated: what this file imports/calls/depends on, or "nothing" if standalone]
@@ -445,8 +471,9 @@ Diff:
 ```
 {}
 ```"#,
-            file.filename, file.status, file.patch
-        );
+                file.filename, file.status, file.patch
+            )
+        };
 
         let body = serde_json::json!({
             "model": "claude-sonnet-4-20250514",
