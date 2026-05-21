@@ -1,0 +1,22 @@
+[package]
+name = "lazydiff"
+version = "0.1.0"
+edition = "2021"
+description = "Human-readable PR diff viewer powered by AI"
+
+[lib]
+name = "lazydiff_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = { version = "2", default-features = false, features = ["xdg-portal"] }
+tauri-plugin-fs = "2"
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+parking_lot = "0.12"
+reqwest = { version = "0.12", features = ["blocking", "json"] }
