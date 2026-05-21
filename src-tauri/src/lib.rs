@@ -361,18 +361,32 @@ fn parse_file_patches(full_patch: &str) -> HashMap<String, String> {
 
 #[tauri::command]
 fn list_branches(repo_path: String) -> Result<Vec<String>, String> {
+    // List both local and remote branches
     let output = Command::new("git")
-        .args(["branch", "--format=%(refname:short)"])
+        .args(["branch", "-a", "--format=%(refname:short)"])
         .current_dir(&repo_path)
         .output()
         .map_err(|e| format!("Failed to list branches: {}", e))?;
 
-    let branches = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(|l| l.trim().to_string())
-        .filter(|l| !l.is_empty())
-        .collect();
+    let mut seen = std::collections::HashSet::new();
+    let mut branches = Vec::new();
 
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.contains("HEAD") {
+            continue;
+        }
+        // Strip "origin/" prefix for remote branches
+        let name = trimmed
+            .strip_prefix("origin/")
+            .unwrap_or(trimmed)
+            .to_string();
+        if seen.insert(name.clone()) {
+            branches.push(name);
+        }
+    }
+
+    branches.sort();
     Ok(branches)
 }
 

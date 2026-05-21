@@ -17,12 +17,12 @@
   let inputEl: HTMLInputElement | undefined = $state();
 
   let filtered = $derived.by(() => {
-    if (!query && !focused) return [];
+    if (!focused) return [];
     const q = query.toLowerCase();
-    return items.filter(i => !q || i.toLowerCase().includes(q)).slice(0, 20);
+    return items.filter(i => !q || i.toLowerCase().includes(q)).slice(0, 30);
   });
 
-  let showDropdown = $derived(focused && filtered.length > 0);
+  let showDropdown = $derived(focused && (filtered.length > 0 || (items.length === 0 && query === '')));
 
   function select(item: string) {
     value = item;
@@ -88,15 +88,19 @@
     />
     {#if showDropdown}
       <div class="dropdown">
-        {#each filtered as item, i}
-          <button
-            class="dropdown-item"
-            class:highlighted={i === highlightIndex}
-            onmousedown={() => select(item)}
-          >
-            {item}
-          </button>
-        {/each}
+        {#if filtered.length > 0}
+          {#each filtered as item, i}
+            <button
+              class="dropdown-item"
+              class:highlighted={i === highlightIndex}
+              onmousedown={() => select(item)}
+            >
+              {item}
+            </button>
+          {/each}
+        {:else}
+          <div class="dropdown-empty">No branches loaded. Select a repo first.</div>
+        {/if}
       </div>
     {/if}
   </div>
@@ -163,5 +167,11 @@
   .dropdown-item:hover,
   .dropdown-item.highlighted {
     background: var(--color-bg-hover);
+  }
+  .dropdown-empty {
+    padding: 8px 10px;
+    font-size: 11px;
+    color: var(--color-text-muted);
+    font-style: italic;
   }
 </style>
