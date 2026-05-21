@@ -96,6 +96,12 @@
           placeholder="branch..."
           label="head"
         />
+        <Typeahead
+          bind:value={diffStore.localBase}
+          items={diffStore.localBranches}
+          placeholder="trunk"
+          label="base"
+        />
       {/if}
 
       <button

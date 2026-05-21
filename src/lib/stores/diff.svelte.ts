@@ -131,7 +131,8 @@ class DiffStore {
     try {
       this.diffResult = await invoke<DiffResult>('fetch_local_diff', {
         repoPath: this.localPath,
-        branch: this.localBranch
+        branch: this.localBranch,
+        baseBranch: this.localBase || null
       });
       if (this.diffResult && this.diffResult.files.length > 0) {
         this.selectedFile = this.diffResult.files[0].filename;
@@ -147,6 +148,17 @@ class DiffStore {
     if (!this.localPath) return;
     try {
       this.localBranches = await invoke<string[]>('list_branches', { repoPath: this.localPath });
+      // Auto-detect current branch as head
+      const current = await invoke<string>('current_branch', { repoPath: this.localPath });
+      if (current) {
+        this.localBranch = current;
+      }
+      // Default base to trunk/main/master
+      if (!this.localBase) {
+        if (this.localBranches.includes('trunk')) this.localBase = 'trunk';
+        else if (this.localBranches.includes('main')) this.localBase = 'main';
+        else if (this.localBranches.includes('master')) this.localBase = 'master';
+      }
     } catch {
       this.localBranches = [];
     }

@@ -260,17 +260,20 @@ fn fetch_github_diff(url: String) -> Result<DiffResult, String> {
 // --- Local git diff command ---
 
 #[tauri::command]
-fn fetch_local_diff(repo_path: String, branch: String) -> Result<DiffResult, String> {
-    // Detect base branch (main or master)
-    let base = {
-        let check_main = Command::new("git")
-            .args(["rev-parse", "--verify", "main"])
-            .current_dir(&repo_path)
-            .output();
-        if check_main.map(|o| o.status.success()).unwrap_or(false) {
-            "main"
-        } else {
-            "master"
+fn fetch_local_diff(repo_path: String, branch: String, base_branch: Option<String>) -> Result<DiffResult, String> {
+    // Use provided base or detect main/master
+    let base = match base_branch {
+        Some(ref b) if !b.is_empty() => b.as_str(),
+        _ => {
+            let check_main = Command::new("git")
+                .args(["rev-parse", "--verify", "main"])
+                .current_dir(&repo_path)
+                .output();
+            if check_main.map(|o| o.status.success()).unwrap_or(false) {
+                "main"
+            } else {
+                "master"
+            }
         }
     };
 
@@ -388,6 +391,19 @@ fn list_branches(repo_path: String) -> Result<Vec<String>, String> {
 
     branches.sort();
     Ok(branches)
+}
+
+// --- Current branch ---
+
+#[tauri::command]
+fn current_branch(repo_path: String) -> Result<String, String> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(&repo_path)
+        .output()
+        .map_err(|e| format!("Failed to get current branch: {}", e))?;
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 // --- Claude API command ---
@@ -660,6 +676,7 @@ pub fn run() {
             fetch_github_branches,
             fetch_local_diff,
             list_branches,
+            current_branch,
             summarize_with_claude,
             check_for_updates,
             run_self_update,
