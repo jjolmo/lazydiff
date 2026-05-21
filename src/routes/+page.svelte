@@ -2,12 +2,14 @@
   import FileTree from '$lib/components/FileTree.svelte';
   import DiffViewer from '$lib/components/DiffViewer.svelte';
   import SettingsPanel from '$lib/components/SettingsPanel.svelte';
+  import Typeahead from '$lib/components/Typeahead.svelte';
   import { diffStore } from '$lib/stores/diff.svelte';
   import { settingsStore } from '$lib/stores/settings.svelte';
   import { open } from '@tauri-apps/plugin-dialog';
 
   let showSettings = $state(false);
   let sidebarWidth = $state(280);
+  let repoInputTimer: ReturnType<typeof setTimeout> | null = null;
 
   async function handleFetch() {
     if (diffStore.mode === 'github') {
@@ -27,7 +29,18 @@
 
   function handleKeydown(e: KeyboardEvent) {
     if (e.key === 'Escape' && showSettings) showSettings = false;
-    if (e.key === 'Enter' && !showSettings && diffStore.inputUrl) handleFetch();
+  }
+
+  function handleRepoInput(e: Event) {
+    const val = (e.target as HTMLInputElement).value;
+    diffStore.ghRepo = val;
+    // Debounce branch loading
+    if (repoInputTimer) clearTimeout(repoInputTimer);
+    repoInputTimer = setTimeout(() => {
+      if (diffStore.parseRepo(val)) {
+        diffStore.loadGitHubBranches();
+      }
+    }, 600);
   }
 </script>
 
@@ -52,23 +65,37 @@
 
       {#if diffStore.mode === 'github'}
         <input
-          class="url-input"
+          class="repo-input"
           type="text"
-          placeholder="Paste GitHub PR or branch URL..."
-          bind:value={diffStore.inputUrl}
+          placeholder="owner/repo or PR URL..."
+          value={diffStore.ghRepo}
+          oninput={handleRepoInput}
         />
+        <Typeahead
+          bind:value={diffStore.ghHead}
+          items={diffStore.ghBranches}
+          placeholder="branch..."
+          label="head"
+        />
+        <Typeahead
+          bind:value={diffStore.ghBase}
+          items={diffStore.ghBranches}
+          placeholder="trunk"
+          label="base"
+        />
+        {#if diffStore.ghLoadingBranches}
+          <span class="loading-branches">...</span>
+        {/if}
       {:else}
         <button class="browse-btn" onclick={browsePath}>
           {diffStore.localPath || 'Select repo...'}
         </button>
-        {#if diffStore.localBranches.length > 0}
-          <select class="branch-select" bind:value={diffStore.localBranch}>
-            <option value="">Select branch...</option>
-            {#each diffStore.localBranches as branch}
-              <option value={branch}>{branch}</option>
-            {/each}
-          </select>
-        {/if}
+        <Typeahead
+          bind:value={diffStore.localBranch}
+          items={diffStore.localBranches}
+          placeholder="branch..."
+          label="head"
+        />
       {/if}
 
       <button
@@ -228,17 +255,26 @@
     background: var(--color-accent);
     color: white;
   }
-  .url-input {
-    flex: 1;
-    min-width: 200px;
-    padding: 6px 12px;
+  .repo-input {
+    width: 180px;
+    min-width: 140px;
+    padding: 6px 10px;
     background: var(--color-bg-input);
     border: 1px solid var(--color-border);
     border-radius: 6px;
     color: var(--color-text-primary);
     font-size: 12px;
+    font-family: var(--font-mono);
+    flex-shrink: 1;
   }
-  .url-input:focus { outline: none; border-color: var(--color-accent); }
+  .repo-input:focus { outline: none; border-color: var(--color-accent); }
+  .loading-branches {
+    font-size: 11px;
+    color: var(--color-text-muted);
+    flex-shrink: 0;
+    animation: pulse 1s infinite;
+  }
+  @keyframes pulse { 50% { opacity: 0.3; } }
   .browse-btn {
     padding: 6px 12px;
     background: var(--color-bg-input);
@@ -251,14 +287,6 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-  .branch-select {
-    padding: 6px 8px;
-    background: var(--color-bg-input);
-    border: 1px solid var(--color-border);
-    border-radius: 6px;
-    color: var(--color-text-primary);
-    font-size: 12px;
   }
   .fetch-btn {
     padding: 6px 16px;

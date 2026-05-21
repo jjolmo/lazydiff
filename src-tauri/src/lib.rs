@@ -48,7 +48,100 @@ pub struct AiSummary {
     pub summary: String,
 }
 
-// --- GitHub API command ---
+// --- GitHub branches command ---
+
+#[tauri::command]
+fn fetch_github_branches(owner: String, repo: String) -> Result<Vec<String>, String> {
+    let client = reqwest::blocking::Client::new();
+    let mut branches = Vec::new();
+    let mut page = 1;
+
+    loop {
+        let url = format!(
+            "https://api.github.com/repos/{}/{}/branches?per_page=100&page={}",
+            owner, repo, page
+        );
+        let resp = client
+            .get(&url)
+            .header("User-Agent", "lazydiff")
+            .header("Accept", "application/vnd.github.v3+json")
+            .send()
+            .map_err(|e| format!("Failed to fetch branches: {}", e))?;
+
+        if !resp.status().is_success() {
+            return Err(format!("GitHub API error: {}", resp.status()));
+        }
+
+        let json: Vec<serde_json::Value> =
+            resp.json().map_err(|e| format!("Failed to parse branches: {}", e))?;
+
+        if json.is_empty() {
+            break;
+        }
+        for b in &json {
+            if let Some(name) = b["name"].as_str() {
+                branches.push(name.to_string());
+            }
+        }
+        if json.len() < 100 {
+            break;
+        }
+        page += 1;
+    }
+
+    branches.sort();
+    Ok(branches)
+}
+
+// --- GitHub compare (direct params) ---
+
+#[tauri::command]
+fn fetch_github_compare(owner: String, repo: String, base: String, head: String) -> Result<DiffResult, String> {
+    let compare_url = format!(
+        "https://api.github.com/repos/{}/{}/compare/{}...{}",
+        owner, repo, base, head
+    );
+    let client = reqwest::blocking::Client::new();
+    let resp = client
+        .get(&compare_url)
+        .header("User-Agent", "lazydiff")
+        .header("Accept", "application/vnd.github.v3+json")
+        .send()
+        .map_err(|e| format!("Failed to fetch diff: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("GitHub API error: {}", resp.status()));
+    }
+
+    let json: serde_json::Value =
+        resp.json().map_err(|e| format!("Failed to parse diff: {}", e))?;
+
+    let files = json["files"]
+        .as_array()
+        .unwrap_or(&vec![])
+        .iter()
+        .map(|f| FileDiff {
+            filename: f["filename"].as_str().unwrap_or("").to_string(),
+            status: f["status"].as_str().unwrap_or("modified").to_string(),
+            additions: f["additions"].as_u64().unwrap_or(0) as u32,
+            deletions: f["deletions"].as_u64().unwrap_or(0) as u32,
+            patch: f["patch"].as_str().unwrap_or("").to_string(),
+        })
+        .collect::<Vec<_>>();
+
+    let total_additions = files.iter().map(|f| f.additions).sum();
+    let total_deletions = files.iter().map(|f| f.deletions).sum();
+
+    Ok(DiffResult {
+        base,
+        head,
+        files,
+        total_additions,
+        total_deletions,
+    })
+}
+
+// --- GitHub API command (URL-based, kept for PR URLs) ---
 
 #[tauri::command]
 fn fetch_github_diff(url: String) -> Result<DiffResult, String> {
@@ -465,6 +558,8 @@ pub fn run() {
             get_setting,
             set_setting,
             fetch_github_diff,
+            fetch_github_compare,
+            fetch_github_branches,
             fetch_local_diff,
             list_branches,
             summarize_with_claude,
